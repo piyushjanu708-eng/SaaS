@@ -5,15 +5,16 @@ import { useDropzone } from 'react-dropzone';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 
 const TOOLS = [
-  { id: 'merge', name: 'Merge PDF', icon: '📑', multi: true, accept: '.pdf' },
-  { id: 'split', name: 'Split PDF', icon: '✂️', multi: false, accept: '.pdf' },
-  { id: 'compress', name: 'Compress PDF', icon: '📦', multi: false, accept: '.pdf' },
-  { id: 'rotate', name: 'Rotate PDF', icon: '🔄', multi: false, accept: '.pdf' },
-  { id: 'watermark', name: 'Watermark', icon: '💧', multi: false, accept: '.pdf' },
-  { id: 'lock', name: 'Lock PDF', icon: '🔒', multi: false, accept: '.pdf' },
-  { id: 'unlock', name: 'Unlock PDF', icon: '🔓', multi: false, accept: '.pdf' },
-  { id: 'jpg-to-pdf', name: 'JPG to PDF', icon: '🖼️', multi: true, accept: '.jpg,.jpeg,.png' },
-  { id: 'page-number', name: 'Page Numbers', icon: '🔢', multi: false, accept: '.pdf' },
+  { id: 'merge', name: 'Merge PDF', icon: '📑', multi: true, accept: { 'application/pdf': ['.pdf'] } },
+  { id: 'split', name: 'Split PDF', icon: '✂️', multi: false, accept: { 'application/pdf': ['.pdf'] } },
+  { id: 'compress', name: 'Compress PDF', icon: '📦', multi: false, accept: { 'application/pdf': ['.pdf'] } },
+  { id: 'rotate', name: 'Rotate PDF', icon: '🔄', multi: false, accept: { 'application/pdf': ['.pdf'] } },
+  { id: 'watermark', name: 'Watermark PDF', icon: '💧', multi: false, accept: { 'application/pdf': ['.pdf'] } },
+  { id: 'lock', name: 'Lock PDF', icon: '🔒', multi: false, accept: { 'application/pdf': ['.pdf'] } },
+  { id: 'unlock', name: 'Unlock PDF', icon: '🔓', multi: false, accept: { 'application/pdf': ['.pdf'] } },
+  { id: 'jpg-to-pdf', name: 'JPG to PDF', icon: '🖼️', multi: true, accept: { 'image/jpeg': ['.jpg', '.jpeg'], 'image/png': ['.png'] } },
+  { id: 'page-number', name: 'Add Page Numbers', icon: '🔢', multi: false, accept: { 'application/pdf': ['.pdf'] } },
+  { id: 'crop', name: 'Crop PDF', icon: '✂️', multi: false, accept: { 'application/pdf': ['.pdf'] } },
 ];
 
 export default function Home() {
@@ -21,230 +22,523 @@ export default function Home() {
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [result, setResult] = useState(null);
+  const [resultUrl, setResultUrl] = useState(null);
+  const [resultName, setResultName] = useState('');
   const [error, setError] = useState('');
 
   const onDrop = useCallback((accepted) => {
     setError('');
-    setResult(null);
-    if (!tool) { setError('Select a tool first'); return; }
-    const max = tool.multi ? 20 : 1;
-    if (accepted.length > max) { setError(`Max ${max} file(s)`); return; }
-    const size = accepted.reduce((s, f) => s + f.size, 0);
-    if (size > 50000000) { setError('Max 50MB total'); return; }
-    setFiles(accepted.map(f => ({ file: f, id: Math.random().toString(36) })));
+    setResultUrl(null);
+    
+    if (!tool) {
+      setError('Please select a tool first');
+      return;
+    }
+    
+    const maxFiles = tool.multi ? 30 : 1;
+    if (accepted.length > maxFiles) {
+      setError(`Maximum ${maxFiles} file(s) allowed`);
+      return;
+    }
+    
+    const totalSize = accepted.reduce((s, f) => s + f.size, 0);
+    if (totalSize > 50 * 1024 * 1024) {
+      setError('Total file size exceeds 50MB limit');
+      return;
+    }
+    
+    setFiles(accepted);
   }, [tool]);
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop, multiple: tool?.multi || false });
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    accept: tool?.accept || undefined,
+    multiple: tool?.multi || false,
+    maxSize: 50 * 1024 * 1024,
+  });
 
-  const process = async () => {
-    if (!files.length) return;
-    setLoading(true);
-    setProgress(0);
-    try {
-      const bufs = await Promise.all(files.map(f => f.file.arrayBuffer()));
-      setProgress(10);
-      let res;
-      if (tool.id === 'merge') res = await mergePdfs(bufs);
-      else if (tool.id === 'split') res = await splitPdf(bufs[0]);
-      else if (tool.id === 'compress') res = await compressPdf(bufs[0]);
-      else if (tool.id === 'rotate') res = await rotatePdf(bufs[0]);
-      else if (tool.id === 'watermark') res = await watermarkPdf(bufs[0]);
-      else if (tool.id === 'lock') res = await lockPdf(bufs[0]);
-      else if (tool.id === 'unlock') res = await unlockPdf(bufs[0]);
-      else if (tool.id === 'jpg-to-pdf') res = await jpgToPdf(bufs);
-      else if (tool.id === 'page-number') res = await addNumbers(bufs[0]);
-      setProgress(90);
-      const ext = tool.id === 'split' ? 'zip' : 'pdf';
-      const mime = ext === 'zip' ? 'application/zip' : 'application/pdf';
-      const blob = new Blob([res], { type: mime });
-      setResult({ url: URL.createObjectURL(blob), name: `${tool.id}-result.${ext}` });
-      setProgress(100);
-    } catch (e) {
-      setError(e.message || 'Failed');
-    }
-    setLoading(false);
+  const readFileAsUint8Array = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(new Uint8Array(reader.result));
+      reader.onerror = () => reject(new Error('Failed to read file'));
+      reader.readAsArrayBuffer(file);
+    });
   };
 
-  const reset = () => { setTool(null); setFiles([]); setResult(null); setError(''); };
+  const processFiles = async () => {
+    if (files.length === 0) return;
+    
+    setLoading(true);
+    setProgress(5);
+    setError('');
+    setResultUrl(null);
+
+    try {
+      const buffers = [];
+      for (let i = 0; i < files.length; i++) {
+        buffers.push(await readFileAsUint8Array(files[i]));
+        setProgress(5 + Math.round((i / files.length) * 10));
+      }
+
+      let outputBytes;
+      let outputName;
+      const toolId = tool.id;
+
+      setProgress(20);
+
+      if (toolId === 'merge') {
+        const merged = await PDFDocument.create();
+        for (let i = 0; i < buffers.length; i++) {
+          const pdf = await PDFDocument.load(buffers[i]);
+          const pages = await merged.copyPages(pdf, pdf.getPageIndices());
+          pages.forEach(p => merged.addPage(p));
+          setProgress(20 + Math.round(((i + 1) / buffers.length) * 60));
+        }
+        outputBytes = await merged.save();
+        outputName = 'merged.pdf';
+      }
+      else if (toolId === 'split') {
+        const pdf = await PDFDocument.load(buffers[0]);
+        const totalPages = pdf.getPageCount();
+        const JSZip = (await import('jszip')).default;
+        const zip = new JSZip();
+        
+        for (let i = 0; i < totalPages; i++) {
+          const newDoc = await PDFDocument.create();
+          const [page] = await newDoc.copyPages(pdf, [i]);
+          newDoc.addPage(page);
+          zip.file(`page_${i + 1}.pdf`, await newDoc.save());
+          setProgress(20 + Math.round(((i + 1) / totalPages) * 60));
+        }
+        outputBytes = await zip.generateAsync({ type: 'uint8array' });
+        outputName = 'split-pages.zip';
+      }
+      else if (toolId === 'compress') {
+        const pdf = await PDFDocument.load(buffers[0]);
+        setProgress(50);
+        outputBytes = await pdf.save({ useObjectStreams: true });
+        outputName = 'compressed.pdf';
+      }
+      else if (toolId === 'rotate') {
+        const pdf = await PDFDocument.load(buffers[0]);
+        const pages = pdf.getPages();
+        for (let i = 0; i < pages.length; i++) {
+          const current = pages[i].getRotation().angle || 0;
+          pages[i].setRotation({ angle: (current + 90) % 360 });
+          setProgress(20 + Math.round(((i + 1) / pages.length) * 60));
+        }
+        outputBytes = await pdf.save();
+        outputName = 'rotated.pdf';
+      }
+      else if (toolId === 'watermark') {
+        const pdf = await PDFDocument.load(buffers[0]);
+        const pages = pdf.getPages();
+        const font = await pdf.embedFont(StandardFonts.Helvetica);
+        
+        for (let i = 0; i < pages.length; i++) {
+          const page = pages[i];
+          const { width, height } = page.getSize();
+          const text = 'DRAFT';
+          const fontSize = Math.min(width, height) * 0.1;
+          
+          page.drawText(text, {
+            x: width / 4,
+            y: height / 2,
+            size: fontSize,
+            font,
+            color: rgb(1, 0, 0),
+            opacity: 0.15,
+            rotate: { angle: -45, origin: [width/2, height/2] }
+          });
+          
+          setProgress(20 + Math.round(((i + 1) / pages.length) * 60));
+        }
+        outputBytes = await pdf.save();
+        outputName = 'watermarked.pdf';
+      }
+      else if (toolId === 'lock') {
+        const pdf = await PDFDocument.load(buffers[0]);
+        setProgress(50);
+        pdf.encrypt({
+          userPassword: 'mypassword123',
+          ownerPassword: 'ownerpass456',
+        });
+        outputBytes = await pdf.save();
+        outputName = 'locked.pdf';
+      }
+      else if (toolId === 'unlock') {
+        let pdf;
+        try {
+          pdf = await PDFDocument.load(buffers[0], { password: 'mypassword123' });
+        } catch {
+          pdf = await PDFDocument.load(buffers[0]);
+        }
+        setProgress(50);
+        outputBytes = await pdf.save();
+        outputName = 'unlocked.pdf';
+      }
+      else if (toolId === 'jpg-to-pdf') {
+        const pdf = await PDFDocument.create();
+        
+        for (let i = 0; i < buffers.length; i++) {
+          const bytes = buffers[i];
+          let image;
+          
+          if (bytes[0] === 0x89 && bytes[1] === 0x50) {
+            image = await pdf.embedPng(bytes);
+          } else {
+            image = await pdf.embedJpg(bytes);
+          }
+          
+          const page = pdf.addPage([595, 842]);
+          const dims = image.scale(1);
+          const scale = Math.min(555 / dims.width, 802 / dims.height);
+          
+          page.drawImage(image, {
+            x: (595 - dims.width * scale) / 2,
+            y: (842 - dims.height * scale) / 2,
+            width: dims.width * scale,
+            height: dims.height * scale,
+          });
+          
+          setProgress(20 + Math.round(((i + 1) / buffers.length) * 60));
+        }
+        outputBytes = await pdf.save();
+        outputName = 'images-to-pdf.pdf';
+      }
+      else if (toolId === 'page-number') {
+        const pdf = await PDFDocument.load(buffers[0]);
+        const pages = pdf.getPages();
+        const font = await pdf.embedFont(StandardFonts.Helvetica);
+        
+        for (let i = 0; i < pages.length; i++) {
+          const page = pages[i];
+          const { width } = page.getSize();
+          const text = `${i + 1}`;
+          
+          page.drawText(text, {
+            x: width / 2 - 5,
+            y: 30,
+            size: 11,
+            font,
+            color: rgb(0.3, 0.3, 0.3),
+          });
+          
+          setProgress(20 + Math.round(((i + 1) / pages.length) * 60));
+        }
+        outputBytes = await pdf.save();
+        outputName = 'numbered.pdf';
+      }
+      else if (toolId === 'crop') {
+        const pdf = await PDFDocument.load(buffers[0]);
+        const pages = pdf.getPages();
+        
+        for (let i = 0; i < pages.length; i++) {
+          const page = pages[i];
+          const { width, height } = page.getSize();
+          page.setCropBox(25, 25, width - 25, height - 25);
+          setProgress(20 + Math.round(((i + 1) / pages.length) * 60));
+        }
+        outputBytes = await pdf.save();
+        outputName = 'cropped.pdf';
+      }
+      else {
+        throw new Error('Unknown tool');
+      }
+
+      setProgress(90);
+      
+      const blob = new Blob([outputBytes], { type: toolId === 'split' ? 'application/zip' : 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      
+      setResultUrl(url);
+      setResultName(outputName);
+      setProgress(100);
+      
+    } catch (err) {
+      console.error(err);
+      setError('Processing failed: ' + (err.message || 'Unknown error'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const reset = () => {
+    if (resultUrl) URL.revokeObjectURL(resultUrl);
+    setTool(null);
+    setFiles([]);
+    setResultUrl(null);
+    setResultName('');
+    setError('');
+    setProgress(0);
+  };
+
+  const styles = {
+    container: {
+      maxWidth: '850px',
+      margin: '0 auto',
+      padding: '20px',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      minHeight: '100vh',
+    },
+    header: {
+      textAlign: 'center',
+      padding: '30px 0 10px',
+    },
+    title: {
+      fontSize: '28px',
+      fontWeight: '800',
+      color: '#1e293b',
+      margin: '0 0 5px',
+    },
+    subtitle: {
+      color: '#64748b',
+      fontSize: '15px',
+      margin: 0,
+    },
+    grid: {
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fill, minmax(155px, 1fr))',
+      gap: '12px',
+      marginTop: '20px',
+    },
+    toolCard: {
+      background: 'white',
+      border: '2px solid #e2e8f0',
+      borderRadius: '14px',
+      padding: '20px 15px',
+      cursor: 'pointer',
+      textAlign: 'center',
+      transition: 'all 0.2s ease',
+    },
+    toolIcon: {
+      fontSize: '34px',
+      marginBottom: '8px',
+    },
+    toolName: {
+      fontWeight: '700',
+      fontSize: '14px',
+      color: '#334155',
+    },
+    workspace: {
+      background: 'white',
+      border: '2px solid #e2e8f0',
+      borderRadius: '14px',
+      padding: '18px',
+      marginBottom: '18px',
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+    },
+    backBtn: {
+      background: '#f1f5f9',
+      border: '1px solid #e2e8f0',
+      padding: '9px 18px',
+      borderRadius: '8px',
+      cursor: 'pointer',
+      fontWeight: '600',
+      fontSize: '14px',
+      color: '#475569',
+    },
+    dropzone: {
+      border: '3px dashed #cbd5e1',
+      borderRadius: '16px',
+      padding: '45px 20px',
+      textAlign: 'center',
+      background: 'white',
+      cursor: 'pointer',
+      marginBottom: '18px',
+      transition: 'all 0.2s',
+    },
+    dropzoneActive: {
+      borderColor: '#3b82f6',
+      background: '#eff6ff',
+    },
+    dropIcon: {
+      fontSize: '42px',
+      marginBottom: '10px',
+    },
+    dropText: {
+      fontSize: '16px',
+      fontWeight: '600',
+      color: '#334155',
+      marginBottom: '5px',
+    },
+    dropSubtext: {
+      color: '#94a3b8',
+      fontSize: '13px',
+    },
+    errorBox: {
+      background: '#fef2f2',
+      border: '1px solid #fecaca',
+      color: '#dc2626',
+      padding: '12px 16px',
+      borderRadius: '10px',
+      marginBottom: '15px',
+      fontSize: '14px',
+    },
+    fileList: {
+      background: 'white',
+      border: '1px solid #e2e8f0',
+      borderRadius: '12px',
+      padding: '14px',
+      marginBottom: '15px',
+    },
+    fileItem: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '10px',
+      padding: '7px 0',
+      borderBottom: '1px solid #f1f5f9',
+      fontSize: '14px',
+    },
+    progressBar: {
+      height: '8px',
+      background: '#e2e8f0',
+      borderRadius: '10px',
+      overflow: 'hidden',
+      marginBottom: '6px',
+    },
+    progressFill: {
+      height: '100%',
+      background: '#3b82f6',
+      borderRadius: '10px',
+      transition: 'width 0.3s ease',
+    },
+    processBtn: {
+      width: '100%',
+      padding: '16px',
+      background: '#3b82f6',
+      color: 'white',
+      border: 'none',
+      borderRadius: '12px',
+      fontSize: '16px',
+      fontWeight: '700',
+      cursor: 'pointer',
+      marginBottom: '15px',
+    },
+    successBox: {
+      textAlign: 'center',
+      padding: '20px',
+    },
+    downloadBtn: {
+      display: 'inline-block',
+      padding: '15px 40px',
+      background: '#10b981',
+      color: 'white',
+      borderRadius: '12px',
+      textDecoration: 'none',
+      fontSize: '16px',
+      fontWeight: '700',
+      marginTop: '10px',
+    },
+    footer: {
+      textAlign: 'center',
+      padding: '30px 0',
+      color: '#94a3b8',
+      fontSize: '13px',
+      borderTop: '1px solid #f1f5f9',
+      marginTop: '40px',
+    },
+  };
 
   return (
-    <div style={{ maxWidth: 800, margin: '0 auto', padding: 20 }}>
-      <div style={{ textAlign: 'center', padding: '30px 0' }}>
-        <h1 style={{ fontSize: 28, color: '#1a1a2e', margin: 0 }}>📄 Free PDF Tools</h1>
-        <p style={{ color: '#666' }}>Edit PDFs in your browser • No uploads • Free</p>
+    <div style={styles.container}>
+      
+      <div style={styles.header}>
+        <h1 style={styles.title}>📄 PDF Tools</h1>
+        <p style={styles.subtitle}>Free • Browser-based • No uploads needed</p>
       </div>
 
       {!tool ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+        <div style={styles.grid}>
           {TOOLS.map(t => (
-            <button key={t.id} onClick={() => setTool(t)} style={{
-              padding: 20, background: 'white', border: '2px solid #e5e7eb',
-              borderRadius: 12, cursor: 'pointer', textAlign: 'center'
-            }}>
-              <div style={{ fontSize: 30 }}>{t.icon}</div>
-              <div style={{ fontWeight: 600, marginTop: 8 }}>{t.name}</div>
-            </button>
+            <div
+              key={t.id}
+              style={styles.toolCard}
+              onClick={() => setTool(t)}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = '#3b82f6'; e.currentTarget.style.transform = 'translateY(-2px)'; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = '#e2e8f0'; e.currentTarget.style.transform = 'none'; }}
+            >
+              <div style={styles.toolIcon}>{t.icon}</div>
+              <div style={styles.toolName}>{t.name}</div>
+            </div>
           ))}
         </div>
       ) : (
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            background: 'white', padding: 15, borderRadius: 12, marginBottom: 15, border: '1px solid #e5e7eb' }}>
-            <span><span style={{ fontSize: 24 }}>{tool.icon}</span> <strong>{tool.name}</strong></span>
-            <button onClick={reset} style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: '#f3f4f6', cursor: 'pointer' }}>← Back</button>
+        <>
+          <div style={styles.workspace}>
+            <div>
+              <span style={{ fontSize: '26px', marginRight: '8px' }}>{tool.icon}</span>
+              <span style={{ fontWeight: '700', fontSize: '16px', color: '#1e293b' }}>{tool.name}</span>
+            </div>
+            <button style={styles.backBtn} onClick={reset}>← All Tools</button>
           </div>
 
-          <div {...getRootProps()} style={{
-            border: `3px dashed ${isDragActive ? '#3b82f6' : '#d1d5db'}`,
-            borderRadius: 16, padding: 40, textAlign: 'center', background: isDragActive ? '#eff6ff' : 'white',
-            cursor: 'pointer', marginBottom: 15
-          }}>
+          <div {...getRootProps()} style={{ ...styles.dropzone, ...(isDragActive ? styles.dropzoneActive : {}) }}>
             <input {...getInputProps()} />
-            <div style={{ fontSize: 40 }}>📁</div>
-            <div style={{ fontSize: 18, marginTop: 10 }}>
-              {isDragActive ? 'Drop here...' : 'Tap to browse or drop files'}
+            <div style={styles.dropIcon}>📁</div>
+            <div style={styles.dropText}>
+              {isDragActive ? 'Drop files here...' : 'Drag & drop or tap to select'}
             </div>
-            <div style={{ color: '#888', fontSize: 14, marginTop: 5 }}>
+            <div style={styles.dropSubtext}>
               {tool.multi ? 'Multiple files • ' : 'Single file • '}Max 50MB
             </div>
           </div>
 
-          {error && <div style={{ background: '#fef2f2', color: '#dc2626', padding: 12, borderRadius: 8, marginBottom: 15, border: '1px solid #fecaca' }}>⚠️ {error}</div>}
+          {error && <div style={styles.errorBox}>⚠️ {error}</div>}
 
-          {files.length > 0 && (
-            <div style={{ background: 'white', borderRadius: 12, padding: 15, marginBottom: 15, border: '1px solid #e5e7eb' }}>
-              {files.map(f => (
-                <div key={f.id} style={{ display: 'flex', alignItems: 'center', padding: 5, gap: 8, borderBottom: '1px solid #f3f4f6' }}>
+          {files.length > 0 && !resultUrl && (
+            <div style={styles.fileList}>
+              <div style={{ fontWeight: '700', marginBottom: '8px', fontSize: '14px', color: '#334155' }}>
+                {files.length} file{files.length > 1 ? 's' : ''} selected
+              </div>
+              {files.map((f, i) => (
+                <div key={i} style={styles.fileItem}>
                   <span>📄</span>
-                  <span style={{ flex: 1 }}>{f.file.name}</span>
-                  <span style={{ color: '#888', fontSize: 13 }}>{(f.file.size / 1024 / 1024).toFixed(2)} MB</span>
+                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.name}</span>
+                  <span style={{ color: '#94a3b8', fontSize: '12px' }}>{(f.size / 1024 / 1024).toFixed(2)} MB</span>
                 </div>
               ))}
             </div>
           )}
 
           {loading && (
-            <div style={{ marginBottom: 15 }}>
-              <div style={{ height: 8, background: '#e5e7eb', borderRadius: 8 }}>
-                <div style={{ height: '100%', width: `${progress}%`, background: '#3b82f6', borderRadius: 8, transition: 'width 0.3s' }} />
+            <div style={{ marginBottom: '15px' }}>
+              <div style={styles.progressBar}>
+                <div style={{ ...styles.progressFill, width: `${progress}%` }} />
               </div>
-              <div style={{ textAlign: 'center', color: '#666', marginTop: 5 }}>Processing... {progress}%</div>
+              <div style={{ textAlign: 'center', fontSize: '13px', color: '#64748b', marginTop: '5px' }}>
+                Processing... {progress}%
+              </div>
             </div>
           )}
 
-          {files.length > 0 && !loading && !result && (
-            <button onClick={process} style={{
-              width: '100%', padding: 15, background: '#3b82f6', color: 'white',
-              border: 'none', borderRadius: 12, fontSize: 16, fontWeight: 600, cursor: 'pointer'
-            }}>
+          {files.length > 0 && !loading && !resultUrl && (
+            <button style={styles.processBtn} onClick={processFiles}>
               Process {tool.name}
             </button>
           )}
 
-          {result && (
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ color: '#10b981', fontSize: 20, marginBottom: 10 }}>✅ Complete!</div>
-              <a href={result.url} download={result.name} style={{
-                display: 'inline-block', padding: '15px 40px', background: '#10b981',
-                color: 'white', borderRadius: 12, textDecoration: 'none', fontSize: 16, fontWeight: 600
-              }}>
-                📥 Download
+          {resultUrl && (
+            <div style={styles.successBox}>
+              <div style={{ fontSize: '18px', fontWeight: '700', color: '#10b981', marginBottom: '12px' }}>
+                ✅ Ready!
+              </div>
+              <a href={resultUrl} download={resultName} style={styles.downloadBtn}>
+                📥 Download {resultName}
               </a>
-              <br />
-              <button onClick={reset} style={{ marginTop: 15, padding: '10px 25px', background: '#f3f4f6', border: 'none', borderRadius: 8, cursor: 'pointer' }}>
-                Process Another
-              </button>
+              <br /><br />
+              <button style={styles.backBtn} onClick={reset}>Process Another</button>
             </div>
           )}
-        </div>
+        </>
       )}
 
-      <div style={{ textAlign: 'center', marginTop: 40, color: '#aaa', fontSize: 13 }}>
-        🔒 Files stay in your browser • No server uploads • Free forever
+      <div style={styles.footer}>
+        🔒 All processing happens in your browser • Files never leave your device
       </div>
     </div>
   );
-}
-
-async function mergePdfs(bufs) {
-  const merged = await PDFDocument.create();
-  for (const buf of bufs) {
-    const pdf = await PDFDocument.load(buf);
-    const pages = await merged.copyPages(pdf, pdf.getPageIndices());
-    pages.forEach(p => merged.addPage(p));
-  }
-  return await merged.save();
-}
-
-async function splitPdf(buf) {
-  const pdf = await PDFDocument.load(buf);
-  const total = pdf.getPageCount();
-  const JSZip = (await import('jszip')).default;
-  const zip = new JSZip();
-  for (let i = 0; i < total; i++) {
-    const doc = await PDFDocument.create();
-    const [page] = await doc.copyPages(pdf, [i]);
-    doc.addPage(page);
-    zip.file(`page_${i + 1}.pdf`, await doc.save());
-  }
-  return await zip.generateAsync({ type: 'uint8array' });
-}
-
-async function compressPdf(buf) {
-  const pdf = await PDFDocument.load(buf, { ignoreEncryption: true });
-  return await pdf.save({ useObjectStreams: true });
-}
-
-async function rotatePdf(buf) {
-  const pdf = await PDFDocument.load(buf);
-  pdf.getPages().forEach(p => p.setRotation({ angle: (p.getRotation().angle + 90) % 360 }));
-  return await pdf.save();
-}
-
-async function watermarkPdf(buf) {
-  const pdf = await PDFDocument.load(buf);
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
-  pdf.getPages().forEach(p => {
-    const { width, height } = p.getSize();
-    p.drawText('DRAFT', {
-      x: width/2-80, y: height/2, size: 50, font,
-      color: rgb(0.8, 0.8, 0.8), opacity: 0.3,
-      rotate: { angle: -45, origin: [width/2, height/2] }
-    });
-  });
-  return await pdf.save();
-}
-
-async function lockPdf(buf) {
-  const pdf = await PDFDocument.load(buf);
-  pdf.encrypt({ userPassword: '12345', ownerPassword: 'owner' });
-  return await pdf.save();
-}
-
-async function unlockPdf(buf) {
-  const pdf = await PDFDocument.load(buf, { password: '12345', ignoreEncryption: true });
-  return await pdf.save();
-}
-
-async function jpgToPdf(bufs) {
-  const pdf = await PDFDocument.create();
-  for (const buf of bufs) {
-    const arr = new Uint8Array(buf);
-    const img = arr[0] === 0x89 ? await pdf.embedPng(buf) : await pdf.embedJpg(buf);
-    const page = pdf.addPage([595, 842]);
-    const dims = img.scale(1);
-    const s = Math.min(555/dims.width, 802/dims.height);
-    page.drawImage(img, { x: (595-dims.width*s)/2, y: (842-dims.height*s)/2, width: dims.width*s, height: dims.height*s });
-  }
-  return await pdf.save();
-}
-
-async function addNumbers(buf) {
-  const pdf = await PDFDocument.load(buf);
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
-  pdf.getPages().forEach((p, i) => {
-    p.drawText(`${i + 1}`, { x: p.getSize().width/2-10, y: 30, size: 12, font, color: rgb(0,0,0) });
-  });
-  return await pdf.save();
-  }
+        }
